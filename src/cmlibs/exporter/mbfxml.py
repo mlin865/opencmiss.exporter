@@ -44,9 +44,9 @@ class ArgonSceneExporter(BaseExporter):
         Supports 1D meshes where the elements all have the same element template with two nodes.
         """
         scene = self._document.getRootRegion().getZincRegion().getScene()
-        self.export_from_scene(scene)
+        self.export_from_scene(scene, hierarchical=True)
 
-    def export_from_scene(self, scene, scene_filter=None):
+    def export_from_scene(self, scene, scene_filter=None, hierarchical=False):
         """
         Export graphics from a Zinc Scene into MBF XML format.
 
@@ -55,12 +55,24 @@ class ArgonSceneExporter(BaseExporter):
             graphics are included in the export.
         """
         region = scene.getRegion()
-        self._export_region(region)
-        
-    def _export_region(self, region):
+        call_fcn = self._export_region_hierachy if hierarchical else self._export_region
+        call_fcn(region)
+
+    def _export_region_hierachy(self, region, region_path=None):
+        self._export_region(region, region_path)
+        child_region = region.getFirstChild()
+        while child_region.isValid():
+            region_path = "" if region_path is None else region_path
+            region_path += f"_{child_region.getName()}"
+            self._export_region_hierachy(child_region, region_path)
+            child_region = region.getNextSibling()
+
+    def _export_region(self, region, region_path=None):
         content = extract_mesh_info(region)
-        output_file = self._form_full_filename(self._prefix + ".xml")
-        write_mbfxml(output_file, content)
+        if content is not None:
+            region_path = "" if region_path is None else region_path
+            output_file = self._form_full_filename(self._prefix + region_path + ".xml")
+            write_mbfxml(output_file, content)
 
     def is_valid(self, document=None):
         if document is None:
