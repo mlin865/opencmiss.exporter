@@ -733,7 +733,7 @@ def _connected_segments(curve):
             matched_segment_index = start_point_lookup[end_key]
             uf.union(matched_segment_index, index)
 
-    # Group the indices into connected components
+    # Group the indices into connected components.
     sets = {}
     for i in range(curve_size):
         root = uf.find(i)
@@ -741,12 +741,21 @@ def _connected_segments(curve):
             sets[root] = []
         sets[root].append(i)
 
-    # Reconstruct the segments in order.
-    # Note: This simple reconstruction assumes linear paths.
+    # Reconstruct the segments in connected order.
     final_segments = []
     for root, indices in sets.items():
-        actual_curves = [curve[i] for i in indices]
-        final_segments.append(actual_curves)
+        ordered = []
+        current = root
+        visited = set()
+
+        while current is not None and current not in visited:
+            ordered.append(curve[current])
+            visited.add(current)
+            # Look for the segment that starts where this one ends.
+            end_pt = curve[current][3]
+            end_key = (get_bit_key(end_pt[0]), get_bit_key(end_pt[1]))
+            current = start_point_lookup.get(end_key)
+        final_segments.append(ordered)
 
     return final_segments
 
