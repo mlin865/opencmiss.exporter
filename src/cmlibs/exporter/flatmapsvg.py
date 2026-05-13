@@ -5,11 +5,10 @@ flatmaps from.
 import csv
 import json
 import logging
-
 import math
 import os
 import random
-from decimal import Decimal
+import struct
 
 from packaging.version import Version
 from svgpathtools import svg2paths
@@ -678,81 +677,87 @@ class UnionFind:
             return root_j
         return root_i
 
-    def __repr__(self):
-        return f"{self.parent}"
+
+def get_bit_key(val):
+    """Converts a float to its 64-bit integer representation."""
+    return struct.unpack('>Q', struct.pack('>d', val))[0]
 
 
-def _count_significant_figs(num_str):
-    return len(Decimal(num_str).normalize().as_tuple().digits)
+def get_ulp_neighbours_2d(x, y, window=9):
+    """Generates all bit-level neighbour keys for a coordinate."""
+    x_bits = get_bit_key(x)
+    y_bits = get_bit_key(y)
+
+    # Generate a grid of keys surrounding the point
+    return [
+        (x_bits + i, y_bits + j)
+        for i in range(-window, window + 1)
+        for j in range(-window, window + 1)
+    ]
 
 
-def _create_key(pt, tolerance=1e8):
-    return tuple(int(p * tolerance) for p in pt)
+def get_ulp_neighbours(x, window=9):
+    """Generates all bit-level neighbour keys for a coordinate."""
+    x_bits = get_bit_key(x)
 
-
-def _calculate_tolerance(numbers):
-    min_sig_figs = math.inf
-    max_sig_digit = -math.inf
-    for n in numbers:
-        min_sig_figs = min([min_sig_figs, _count_significant_figs(f"{n}")])
-        # max_sig_digit = max([max_sig_digit, float(f'{float(f"{n:.1g}"):g}')])
-        abs_n = math.fabs(n)
-        max_sig_digit = max([max_sig_digit, math.ceil(math.log10(abs_n if abs_n > 1e-08 else 1.0))])
-
-    min_sig_figs = max(14, min_sig_figs)
-    tolerance_power = min_sig_figs - max_sig_digit - 2
-    return 10 ** (-tolerance_power if tolerance_power > 0 else -8)
+    # Generate a grid of keys surrounding the point
+    return [
+        x_bits + i
+        for i in range(-window, window + 1)
+    ]
 
 
 def _connected_segments(curve):
-    # Determine a tolerance for the curve to use in defining keys
-    numbers = []
-    for c in curve:
-        for i in [0, 3]:
-            for j in [0, 1]:
-                numbers.append(c[i][j])
-
-    key_tolerance = 1 / _calculate_tolerance(numbers)
-
-    begin_hash = {}
-    for index, c in enumerate(curve):
-        key = _create_key(c[0], key_tolerance)
-        if key in begin_hash:
-            logger.warning(f"Problem repeated key found while trying to connect segments! {index} - {c}")
-        begin_hash[key] = index
-
     curve_size = len(curve)
-    uf = UnionFind(len(curve))
-    for index, c in enumerate(curve):
-        y_cur = _create_key(c[3], key_tolerance)
-        if y_cur in begin_hash:
-            uf.union(begin_hash[y_cur], index)
+    uf = UnionFind(curve_size)
 
+    # Create a dictionary to map (x_bits, y_bits) -> segment_index.
+    start_point_lookup = {}
+    window = 55
+
+    for index, c in enumerate(curve):
+        start_pt = c[0]  # [x, y]
+
+        neighbour_keys = get_ulp_neighbours_2d(start_pt[0], start_pt[1], window)
+        for key in neighbour_keys:
+            # Note: if multiple segments start at the same ULP-neighbour space,
+            # the last one wins.
+            start_point_lookup[key] = index
+
+    # Iterate through the ENDS of the segments to find connections.
+    for index, c in enumerate(curve):
+        end_pt = c[3]  # [x, y]
+        end_key = (get_bit_key(end_pt[0]), get_bit_key(end_pt[1]))
+
+        if end_key in start_point_lookup:
+            matched_segment_index = start_point_lookup[end_key]
+            uf.union(matched_segment_index, index)
+
+    # Group the indices into connected components.
     sets = {}
     for i in range(curve_size):
         root = uf.find(i)
         if root not in sets:
             sets[root] = []
-
         sets[root].append(i)
 
-    segments = []
-    for s in sets:
-        seg = [curve[s]]
-        key = _create_key(curve[s][3], key_tolerance)
-        while key in begin_hash:
-            s = begin_hash[key]
-            seg.append(curve[s])
-            old_key = key
-            key = _create_key(curve[s][3], key_tolerance)
-            if old_key == key:
-                logger.warning("Breaking out of loop in determining segments.")
-                break
+    # Reconstruct the segments in connected order.
+    final_segments = []
+    for root, indices in sets.items():
+        ordered = []
+        current = root
+        visited = set()
 
-        segments.append(seg)
+        while current is not None and current not in visited:
+            ordered.append(curve[current])
+            visited.add(current)
+            # Look for the segment that starts where this one ends.
+            end_pt = curve[current][3]
+            end_key = (get_bit_key(end_pt[0]), get_bit_key(end_pt[1]))
+            current = start_point_lookup.get(end_key)
+        final_segments.append(ordered)
 
-    return segments
-
+    return final_segments
 
 def _collect_curves_into_segments_old(bezier_data):
     collection_of_paths = {}
@@ -989,7 +994,7 @@ def _calculate_cervical_thoracic_boundaries(markers):
 def _define_background_regions(boundaries, view_box):
     # Because we calculate eight cervical vertebrae to get to the superior
     # surface of C1 (Atlas), we need the eighth cervical boundary to find
-    # the posterior surface of C7.
+    # the inferior surface of C7.
     boundary = boundaries[0][7]
     min_x = view_box[0]
     min_y = view_box[1]
